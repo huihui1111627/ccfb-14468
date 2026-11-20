@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAP 无状态地址族转换 · 一户一算</title>
+<style>
+  :root { --bg:#0f1419; --panel:#1a2129; --line:#2b3540; --fg:#e6edf3; --mut:#8b98a5;
+          --accent:#4da3ff; --good:#3fb950; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:20px 28px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { margin:0 0 4px; font-size:20px; }
+  header p { margin:0; color:var(--mut); font-size:13px; }
+  .wrap { display:grid; grid-template-columns:340px 1fr; gap:20px; padding:20px 28px; max-width:1280px; margin:0 auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; }
+  .card h2 { margin:0 0 14px; font-size:15px; color:var(--accent); }
+  label { display:block; margin:12px 0 4px; color:var(--mut); font-size:12px; }
+  input, select { width:100%; padding:8px 10px; background:#0d1117; border:1px solid var(--line);
+                  border-radius:6px; color:var(--fg); font-size:14px; font-family:ui-monospace,monospace; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .check { display:flex; align-items:center; gap:8px; margin-top:14px; }
+  .check input { width:auto; }
+  button { width:100%; margin-top:18px; padding:11px; background:var(--accent); color:#08111f;
+           border:0; border-radius:7px; font-weight:700; font-size:14px; cursor:pointer; }
+  button:hover { filter:brightness(1.1); }
+  .kv { display:grid; grid-template-columns:130px 1fr; gap:6px 12px; margin:8px 0; font-size:13px; }
+  .kv .k { color:var(--mut); }
+  .kv .v { font-family:ui-monospace,monospace; word-break:break-all; }
+  .step { border-left:3px solid var(--accent); padding:8px 12px; margin:10px 0; background:#0d1117;
+          border-radius:0 6px 6px 0; }
+  .step .t { font-weight:700; color:var(--accent); margin-bottom:3px; }
+  .step .d { color:var(--mut); font-size:12.5px; }
+  .bits { font-family:ui-monospace,monospace; letter-spacing:2px; color:var(--warn); font-size:15px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:8px; }
+  th,td { border:1px solid var(--line); padding:6px 8px; text-align:left; font-family:ui-monospace,monospace; }
+  th { color:var(--mut); background:#0d1117; }
+  .tag { display:inline-block; padding:2px 9px; border-radius:20px; font-size:12px; font-weight:700; }
+  .tag.ok { background:rgba(63,185,80,.15); color:var(--good); }
+  .tag.no { background:rgba(248,81,73,.15); color:var(--bad); }
+  .ports { max-height:180px; overflow:auto; background:#0d1117; border:1px solid var(--line);
+           border-radius:6px; padding:10px; font-family:ui-monospace,monospace; font-size:12px;
+           color:var(--mut); word-break:break-all; }
+  .err { background:rgba(248,81,73,.12); border:1px solid var(--bad); color:#ffb4ae;
+         padding:10px 14px; border-radius:7px; margin-bottom:14px; }
+  .muted { color:var(--mut); font-size:12px; }
+  @media (max-width:900px){ .wrap{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<header>
+  <h1>MAP 无状态地址族转换 · 一户一算</h1>
+  <p>输入规则与一户的 PSID，页面按 RFC 7597/7599 公式现场展开端口集、拼出 IPv6 地址，并演示边界设备如何仅凭一条规则从 (IPv4, 端口) 反算出目的户——全程无表。</p>
+</header>
+<div class="wrap">
+  <div class="card">
+    <h2>一户参数</h2>
+    <label>规则 IPv4 前缀</label>
+    <input id="v4Prefix" value="192.0.2.0/30">
+    <label>规则 IPv6 前缀</label>
+    <input id="v6Prefix" value="2001:db8:ffff::/64">
+    <div class="row">
+      <div><label>PSID 位数 k</label><input id="psidLen" type="number" value="6" min="1" max="16"></div>
+      <div><label>PSID 偏移 a</label><input id="psidOffset" type="number" value="6" min="0" max="15"></div>
+    </div>
+    <div class="row">
+      <div><label>本户 PSID</label><input id="psid" type="number" value="21" min="0"></div>
+      <div><label>共享公网 IPv4</label><input id="sharedV4" value="192.0.2.2"></div>
+    </div>
+    <div class="check">
+      <input id="neutral" type="checkbox">
+      <label for="neutral" style="margin:0">校验和中立布局 (64:ff9b::/64)</label>
+    </div>
+    <button onclick="calc()">计算这一户</button>
+    <p class="muted" style="margin-top:14px">切换校验和中立时，IPv6 前缀将自动改为 64:ff9b::/64，传输层校验和无需修改。</p>
+  </div>
+
+  <div class="card" id="result">
+    <h2>计算结果</h2>
+    <p class="muted">填写左侧参数后点击计算。</p>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+$('neutral').addEventListener('change', e => {
+  $('v6Prefix').value = e.target.checked ? '64:ff9b::/64' : '2001:db8:ffff::/64';
+});
+
+async function calc() {
+  const body = {
+    v4Prefix: $('v4Prefix').value.trim(),
+    v6Prefix: $('v6Prefix').value.trim(),
+    psidLen: parseInt($('psidLen').value),
+    psidOffset: parseInt($('psidOffset').value),
+    psid: parseInt($('psid').value),
+    sharedV4: $('sharedV4').value.trim(),
+    checksumNeutral: $('neutral').checked,
+  };
+  const res = await fetch('/api/calc', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+  const d = await res.json();
+  const el = $('result');
+  if (!d.ok) { el.innerHTML = '<h2>计算结果</h2><div class="err">'+d.error+'</div>'; return; }
+
+  let rows = d.resolveDemo.map(x => `<tr><td>${x.port}</td><td>${x.PSID}</td><td>${x.v6}</td>
+      <td><span class="tag ok">${x.inSet?'在端口集内':'—'}</span></td></tr>`).join('');
+  let steps = d.steps.map(s => `<div class="step"><div class="t">${s.title}</div>
+      <div class="d">${s.detail}</div>${s.bits?`<div class="bits">${s.bits}</div>`:''}</div>`).join('');
+
+  el.innerHTML = `
+    <h2>计算结果</h2>
+    <div class="kv">
+      <div class="k">户 IPv6 地址</div><div class="v" style="color:var(--good);font-size:15px">${d.subscriberV6}</div>
+      <div class="k">共享 IPv4</div><div class="v">${$('sharedV4').value}</div>
+      <div class="k">本户 PSID</div><div class="v">${$('psid').value}（${d.rule.psidLen} 位）</div>
+      <div class="k">一个 IPv4 带户数</div><div class="v">${d.subscribersPerV4} 户（2^${d.rule.psidLen}）</div>
+      <div class="k">本户端口数</div><div class="v">${d.portSetCount} 个（已跳过 &lt;1024 知名端口）</div>
+      <div class="k">端口集不相交</div><div class="v"><span class="tag ${d.disjoint?'ok':'no'}">${d.disjoint?'相邻 PSID 集合无交集':'存在冲突'}</span></div>
+      <div class="k">校验和中立</div><div class="v"><span class="tag ${d.rule.checksumNeutral?'ok':'no'}">${d.rule.checksumNeutral?'是，传输校验和不变':'否，RFC1624 增量更新'}</span></div>
+    </div>
+
+    <h2 style="margin-top:22px">端口集如何展开</h2>
+    ${steps}
+    <div class="ports">${d.portSet.slice(0,120).join(', ')}${d.portSet.length>120?' …':''}</div>
+
+    <h2 style="margin-top:22px">边界设备无状态反算演示</h2>
+    <p class="muted">BR 不保存任何连接，仅凭一条规则从「目的 IPv4 + 目的端口」反解 PSID 并算出户 IPv6：</p>
+    <table>
+      <tr><th>入向目的端口</th><th>反解 PSID</th><th>算出的户 IPv6</th><th>归属</th></tr>
+      ${rows}
+    </table>`;
+}
+</script>
+</body>
+</html>
